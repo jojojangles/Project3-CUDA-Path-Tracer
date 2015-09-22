@@ -17,6 +17,7 @@
 #define FILENAME (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #define checkCUDAError(msg) checkCUDAErrorFn(msg, FILENAME, __LINE__)
 void checkCUDAErrorFn(const char *msg, const char *file, int line) {
+	cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
     if (cudaSuccess == err) {
         return;
@@ -27,6 +28,7 @@ void checkCUDAErrorFn(const char *msg, const char *file, int line) {
         fprintf(stderr, " (%s:%d)", file, line);
     }
     fprintf(stderr, ": %s: %s\n", msg, cudaGetErrorString(err));
+	getchar();
     exit(EXIT_FAILURE);
 }
 
@@ -60,8 +62,9 @@ __global__ void sendImageToPBO(uchar4* pbo, glm::ivec2 resolution,
 
 static Scene *hst_scene = NULL;
 static glm::vec3 *dev_image = NULL;
-// TODO: static variables for device memory, scene/camera info, etc
-// ...
+static Geom *dev_geo = NULL;
+static Material *dev_mat = NULL;
+static Ray *dev_rays = NULL;
 
 void pathtraceInit(Scene *scene) {
     hst_scene = scene;
@@ -70,41 +73,109 @@ void pathtraceInit(Scene *scene) {
 
     cudaMalloc(&dev_image, pixelcount * sizeof(glm::vec3));
     cudaMemset(dev_image, 0, pixelcount * sizeof(glm::vec3));
-    // TODO: initialize the above static variables added above
 
+	const int geolements = hst_scene->geoms.size();
+	const int matlements = hst_scene->materials.size();
+	cudaMalloc(&dev_geo, geolements * sizeof(Geom));
+	cudaMalloc(&dev_mat, matlements * sizeof(Material));
+	cudaMalloc(&dev_rays, pixelcount * sizeof(Ray));
+	cudaMemcpy(dev_geo, hst_scene->geoms.data(), geolements * sizeof(Geom), cudaMemcpyHostToDevice);
+	cudaMemcpy(dev_mat, hst_scene->materials.data(), matlements * sizeof(Material), cudaMemcpyHostToDevice);
     checkCUDAError("pathtraceInit");
 }
 
 void pathtraceFree() {
     cudaFree(dev_image);  // no-op if dev_image is null
-    // TODO: clean up the above static variables
-
+	cudaFree(dev_geo);
+	cudaFree(dev_mat);
+	cudaFree(dev_rays);
     checkCUDAError("pathtraceFree");
 }
 
-/**
- * Example function to generate static and test the CUDA-GL interop.
- * Delete this once you're done looking at it!
- */
-__global__ void generateNoiseDeleteMe(Camera cam, int iter, glm::vec3 *image) {
-    int x = (blockIdx.x * blockDim.x) + threadIdx.x;
-    int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+__global__ void rayBuilder(Camera cam, Ray *rays, float tanx, float tany, glm::vec3 right, glm::vec3 perup, int pixelcount) {
+	int uidx = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int vidx = (blockIdx.y * blockDim.y) + threadIdx.y;
+	float u = (2.0f * uidx / cam.resolution.x - 1.0f);
+	float v = (2.0f * vidx / cam.resolution.y - 1.0f);
+	int rayidx = vidx * cam.resolution.x + uidx;
+	if (rayidx <  pixelcount) {
+		glm::vec3 eye = cam.position;
+		glm::vec3 pixel = eye + cam.view - tanx*u*right - tany*v*perup;
+		rays[rayidx].origin = eye;
+		rays[rayidx].direction = glm::normalize(pixel - eye);
+		rays[rayidx].color = glm::vec3(1.0f);
+		rays[rayidx].pixel = rayidx;
+	}
+}
 
-    if (x < cam.resolution.x && y < cam.resolution.y) {
-        int index = x + (y * cam.resolution.x);
+__global__ void rayDebug(Camera cam, glm::vec3 *image, Ray *rays) {
+	int u = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int v = (blockIdx.y * blockDim.y) + threadIdx.y;
+	int rayidx = v * cam.resolution.x + u;
+	image[rayidx] += glm::abs(rays[rayidx].direction);
+}
 
-        thrust::default_random_engine rng = makeSeededRandomEngine(iter, index, 0);
-        thrust::uniform_real_distribution<float> u01(0, 1);
+__global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, glm::vec3 *image, int pixelcount, int depth) {
+	int ridx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (ridx < pixelcount) {
+		Ray r = rays[ridx];
+		if (glm::length(r.direction) < 0.0001f) { return; }
+		const float t0 = -1.0f;
+		float t1 = INFINITY;
+		bool hit = false;
+		bool light = false;
+		glm::vec3 pt = glm::vec3(0.0f);
+		glm::vec3 temp_pt = glm::vec3(0.0f);
+		glm::vec3 nml = glm::vec3(0.0f);
+		glm::vec3 temp_nml = glm::vec3(0.0f);
+		Geom ghit;
+		Geom g = geo[0];
 
-        // CHECKITOUT: Note that on every iteration, noise gets added onto
-        // the image (not replaced). As a result, the image smooths out over
-        // time, since the output image is the contents of this array divided
-        // by the number of iterations.
-        //
-        // Your renderer will do the same thing, and, over time, it will become
-        // smoother.
-        image[index] += glm::vec3(u01(rng));
-    }
+		for (int i = 0; i < geocount; i++) {
+			g = geo[i];
+			if (g.type == SPHERE) {
+				float temp = sphereIntersectionTest(g, r, temp_pt, temp_nml);
+				if (t0 < temp && temp < t1) {
+					t1 = temp; pt = temp_pt; nml = temp_nml; hit = true; ghit = g;
+				}
+			}
+			else if (g.type == CUBE) {
+				float temp = boxIntersectionTest(g, r, temp_pt, temp_nml);
+				if (t0 < temp && temp < t1) {
+					t1 = temp; pt = temp_pt; nml = temp_nml; hit = true; ghit = g;
+				}
+			}
+		}
+
+		if (hit) {
+			float emit = mats[ghit.materialid].emittance;
+			if (emit > 0.0f) {
+				r.color *= mats[ghit.materialid].emittance;
+				r.color = glm::vec3(1.0f,1.0f,1.0f);
+				r.direction = glm::vec3(0.0f);
+			}
+			else {
+				r.color *= glm::abs(nml);
+				r.direction = glm::vec3(0.0f);
+			}
+		}
+		else { //terminate
+			r.color = glm::vec3(0.4f,0.4f,0.4f);
+			r.direction = glm::vec3(0.0f);
+		}
+		rays[ridx] = r;
+	}
+}
+
+__global__ void consumeRays(Ray *rays, glm::vec3 *image, int pixelcount) {
+	int ridx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (ridx < pixelcount) {
+		Ray r = rays[ridx];
+		if (glm::length(r.direction) < 0.00001f) {
+			image[r.pixel] += r.color;
+			//printf("%f %f %f \n", r.color.x, r.color.y, r.color.z);
+		}
+	}
 }
 
 /**
@@ -123,7 +194,6 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
             (cam.resolution.y + blockSize.y - 1) / blockSize.y);
 
     ///////////////////////////////////////////////////////////////////////////
-
     // Recap:
     // * Initialize array of path rays (using rays that come out of the camera)
     //   * You can pass the Camera object to that kernel.
@@ -148,8 +218,27 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
     //   (Easy way is to make them black or background-colored.)
 
     // TODO: perform one iteration of path tracing
+	float tanx = std::tan(cam.fov.x*PI/180);
+	float tany = std::tan(cam.fov.y*PI/180);
+	glm::vec3 right = glm::cross(cam.view, cam.up);
+	glm::vec3 perup = glm::cross(right, cam.view);
 
-    generateNoiseDeleteMe<<<blocksPerGrid, blockSize>>>(cam, iter, dev_image);
+	rayBuilder << <blocksPerGrid, blockSize >> >(cam, dev_rays, tanx, tany, right, perup, pixelcount);
+	checkCUDAError("rayBuilder");
+	//rayDebug<<<blocksPerGrid,blockSize>>>(cam,dev_image,dev_rays);
+
+	int compacted = 0;
+	dim3 blockSize1d(64, 1);
+	dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);
+	for (int i = 0; i < traceDepth; i++) {
+		dim3 blockSize1d(64, 1);
+		dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);
+		slingRays<<<blocksPerGrid1d, blockSize1d>>>(dev_rays, dev_geo, hst_scene->geoms.size(), dev_mat, dev_image, pixelcount, traceDepth);
+		checkCUDAError("Loop Fuck");
+		//insert a streamcompact here
+		consumeRays << <blocksPerGrid1d, blockSize1d >> >(dev_rays, dev_image, pixelcount);
+		checkCUDAError("Fuck");
+	}
 
     ///////////////////////////////////////////////////////////////////////////
 
