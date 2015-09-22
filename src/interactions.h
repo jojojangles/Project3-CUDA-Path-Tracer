@@ -79,5 +79,5 @@ void scatterRay(
 	//basic first!
 	ray.direction = calculateRandomDirectionInHemisphere(normal, rng);
 	ray.origin = intersect;
-	color = m.color;
+	color *= m.color;
 }

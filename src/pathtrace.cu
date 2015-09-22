@@ -115,7 +115,7 @@ __global__ void rayDebug(Camera cam, glm::vec3 *image, Ray *rays) {
 	image[rayidx] += glm::abs(rays[rayidx].direction);
 }
 
-__global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, glm::vec3 *image, int pixelcount, int depth) {
+__global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, glm::vec3 *image, int pixelcount, int depth, int iter) {
 	int ridx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (ridx < pixelcount) {
 		Ray r = rays[ridx];
@@ -151,16 +151,16 @@ __global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, gl
 			float emit = mats[ghit.materialid].emittance;
 			if (emit > 0.0f) {
 				r.color *= mats[ghit.materialid].emittance;
-				r.color = glm::vec3(1.0f,1.0f,1.0f);
+				//r.color = glm::vec3(1.0f,1.0f,1.0f);
 				r.direction = glm::vec3(0.0f);
 			}
 			else {
-				r.color *= glm::abs(nml);
-				r.direction = glm::vec3(0.0f);
+				thrust::default_random_engine rng = makeSeededRandomEngine(iter, ridx, depth);;
+				scatterRay(r, r.color, pt, nml, mats[ghit.materialid], rng);
 			}
 		}
 		else { //terminate
-			r.color = glm::vec3(0.4f,0.4f,0.4f);
+			r.color = glm::vec3(0.1f,0.1f,0.1f);
 			r.direction = glm::vec3(0.0f);
 		}
 		rays[ridx] = r;
@@ -233,12 +233,12 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
 	for (int i = 0; i < traceDepth; i++) {
 		dim3 blockSize1d(64, 1);
 		dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);
-		slingRays<<<blocksPerGrid1d, blockSize1d>>>(dev_rays, dev_geo, hst_scene->geoms.size(), dev_mat, dev_image, pixelcount, traceDepth);
+		slingRays<<<blocksPerGrid1d, blockSize1d>>>(dev_rays, dev_geo, hst_scene->geoms.size(), dev_mat, dev_image, pixelcount, traceDepth, iter);
 		checkCUDAError("Loop Fuck");
 		//insert a streamcompact here
-		consumeRays << <blocksPerGrid1d, blockSize1d >> >(dev_rays, dev_image, pixelcount);
-		checkCUDAError("Fuck");
 	}
+	consumeRays << <blocksPerGrid1d, blockSize1d >> >(dev_rays, dev_image, pixelcount);
+	checkCUDAError("Fuck");
 
     ///////////////////////////////////////////////////////////////////////////
 
