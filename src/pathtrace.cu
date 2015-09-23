@@ -92,12 +92,17 @@ void pathtraceFree() {
     checkCUDAError("pathtraceFree");
 }
 
-__global__ void rayBuilder(Camera cam, Ray *rays, float tanx, float tany, glm::vec3 right, glm::vec3 perup, int pixelcount) {
+__global__ void rayBuilder(Camera cam, Ray *rays, float tanx, float tany, glm::vec3 right, glm::vec3 perup, int pixelcount, int iter) {
 	int uidx = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int vidx = (blockIdx.y * blockDim.y) + threadIdx.y;
-	float u = (2.0f * uidx / cam.resolution.x - 1.0f);
-	float v = (2.0f * vidx / cam.resolution.y - 1.0f);
 	int rayidx = vidx * cam.resolution.x + uidx;
+
+	thrust::default_random_engine rng = makeSeededRandomEngine(iter, rayidx, 1);
+	thrust::uniform_real_distribution<float> u01(-0.5, 0.5);
+	float result = u01(rng);
+
+	float u = (2.0f * (uidx + result) / cam.resolution.x - 1.0f);
+	float v = (2.0f * (vidx + result) / cam.resolution.y - 1.0f);
 	if (rayidx <  pixelcount) {
 		glm::vec3 eye = cam.position;
 		glm::vec3 pixel = eye + cam.view - tanx*u*right - tany*v*perup;
@@ -151,11 +156,10 @@ __global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, gl
 			float emit = mats[ghit.materialid].emittance;
 			if (emit > 0.0f) {
 				r.color *= mats[ghit.materialid].emittance;
-				//r.color = glm::vec3(1.0f,1.0f,1.0f);
 				r.direction = glm::vec3(0.0f);
 			}
 			else {
-				thrust::default_random_engine rng = makeSeededRandomEngine(iter, ridx, depth);;
+				thrust::default_random_engine rng = makeSeededRandomEngine(iter, ridx, depth);
 				scatterRay(r, r.color, pt, nml, mats[ghit.materialid], rng);
 			}
 		}
@@ -209,7 +213,7 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
     //       surface.
     //     * You can debug your ray-scene intersections by displaying various
     //       values as colors, e.g., the first surface normal, the first bounced
-    //       ray direction, the first unlit material color, etc.
+    //       ray direction,  the first unlit material color, etc.
     //   * Add all of the terminated rays' results into the appropriate pixels.
     //   * Stream compact away all of the terminated paths.
     //     You may use either your implementation or `thrust::remove_if` or its
@@ -223,7 +227,7 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
 	glm::vec3 right = glm::cross(cam.view, cam.up);
 	glm::vec3 perup = glm::cross(right, cam.view);
 
-	rayBuilder << <blocksPerGrid, blockSize >> >(cam, dev_rays, tanx, tany, right, perup, pixelcount);
+	rayBuilder << <blocksPerGrid, blockSize >> >(cam, dev_rays, tanx, tany, right, perup, pixelcount, iter);
 	checkCUDAError("rayBuilder");
 	//rayDebug<<<blocksPerGrid,blockSize>>>(cam,dev_image,dev_rays);
 
@@ -233,7 +237,7 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
 	for (int i = 0; i < traceDepth; i++) {
 		dim3 blockSize1d(64, 1);
 		dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);
-		slingRays<<<blocksPerGrid1d, blockSize1d>>>(dev_rays, dev_geo, hst_scene->geoms.size(), dev_mat, dev_image, pixelcount, traceDepth, iter);
+		slingRays<<<blocksPerGrid1d, blockSize1d>>>(dev_rays, dev_geo, hst_scene->geoms.size(), dev_mat, dev_image, pixelcount, i, iter);
 		checkCUDAError("Loop Fuck");
 		//insert a streamcompact here
 	}
