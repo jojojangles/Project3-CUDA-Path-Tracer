@@ -129,6 +129,7 @@ __global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, gl
 		float t1 = INFINITY;
 		bool hit = false;
 		bool light = false;
+		bool outside = true;
 		glm::vec3 pt = glm::vec3(0.0f);
 		glm::vec3 temp_pt = glm::vec3(0.0f);
 		glm::vec3 nml = glm::vec3(0.0f);
@@ -139,13 +140,13 @@ __global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, gl
 		for (int i = 0; i < geocount; i++) {
 			g = geo[i];
 			if (g.type == SPHERE) {
-				float temp = sphereIntersectionTest(g, r, temp_pt, temp_nml);
+				float temp = sphereIntersectionTest(g, r, temp_pt, temp_nml, outside);
 				if (t0 < temp && temp < t1) {
 					t1 = temp; pt = temp_pt; nml = temp_nml; hit = true; ghit = g;
 				}
 			}
 			else if (g.type == CUBE) {
-				float temp = boxIntersectionTest(g, r, temp_pt, temp_nml);
+				float temp = boxIntersectionTest(g, r, temp_pt, temp_nml, outside);
 				if (t0 < temp && temp < t1) {
 					t1 = temp; pt = temp_pt; nml = temp_nml; hit = true; ghit = g;
 				}
@@ -160,7 +161,7 @@ __global__ void slingRays(Ray *rays, Geom *geo, int geocount, Material *mats, gl
 			}
 			else {
 				thrust::default_random_engine rng = makeSeededRandomEngine(iter, ridx, depth);
-				scatterRay(r, r.color, pt, nml, mats[ghit.materialid], rng);
+				scatterRay(r, outside, r.color, pt, nml, mats[ghit.materialid], rng);
 			}
 		}
 		else { //terminate
