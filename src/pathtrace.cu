@@ -235,6 +235,7 @@ void pathtrace(uchar4 *pbo, int frame, int iter) {
 	int compacted = 0;
 	dim3 blockSize1d(64, 1);
 	dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);
+	int debug = 4;
 	for (int i = 0; i < traceDepth; i++) {
 		dim3 blockSize1d(64, 1);
 		dim3 blocksPerGrid1d((pixelcount - compacted + blockSize1d.x - 1) / blockSize1d.x, 1);

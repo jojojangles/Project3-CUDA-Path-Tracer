@@ -48,7 +48,6 @@ glm::vec3 calculateRandomDirectionSpecular(glm::vec3 normal, glm::vec3 incident,
 	float r2 = u(rng);
 	float theta = acos(pow(r1, (1.0f / (n + 1.0f))));
 	float phi = 2.0f * PI * r2;
-	glm::vec3 jitter(cos(phi)*sin(theta), sin(phi)*sin(theta), cos(theta));
 	//^^^ a vector of jitter
 	//the perfect specular direction:
 	glm::vec3 dspec = -(2.0f * glm::dot(normal, incident) * normal - incident);
@@ -75,6 +74,36 @@ glm::vec3 calculateRandomDirectionSpecular(glm::vec3 normal, glm::vec3 incident,
 		+ sin(phi)*sin(theta) * perpendicularDirection2;
 }
 
+__host__ __device__
+glm::vec3 calculateRefraction(glm::vec3 normal, glm::vec3 incident, bool outside, float ior1, float ior2) {
+	float sint1 = incident.x*incident.x + incident.y*incident.y;
+	float ior = ior2 / ior1;
+	float sint2 = ior*ior*sint1;
+	if (sint2 >= 1.0f && !outside) { return glm::vec3(0); }
+	float cost = sqrtf(max(0.f, 1.f - sint2));
+	if (outside) cost = -cost;
+
+	glm::vec3 directionNotNormal;
+	if (abs(normal.x) < SQRT_OF_ONE_THIRD) {
+		directionNotNormal = glm::vec3(1, 0, 0);
+	}
+	else if (abs(normal.y) < SQRT_OF_ONE_THIRD) {
+		directionNotNormal = glm::vec3(0, 1, 0);
+	}
+	else {
+		directionNotNormal = glm::vec3(0, 0, 1);
+	}
+
+	// Use not-normal direction to generate two perpendicular directions
+	glm::vec3 perpendicularDirection1 =
+		glm::normalize(glm::cross(normal, directionNotNormal));
+	glm::vec3 perpendicularDirection2 =
+		glm::normalize(glm::cross(normal, perpendicularDirection1));
+
+	return cost * normal
+		+ ior * -incident.x * perpendicularDirection1
+		+ ior * -incident.y * perpendicularDirection2;
+}
 /**
  * Scatter a ray with some probabilities according to the material properties.
  * For example, a diffuse surface scatters in a cosine-weighted hemisphere.
@@ -128,26 +157,25 @@ void scatterRay(
 	}
 	float Diff = intensityDiff / (intensityDiff + intensitySpec);
 	float Spec = intensitySpec / (intensityDiff + intensitySpec);
-	if (randoCalrisian < Diff) {//diffuse
+	if (randoCalrisian < Diff && !m.hasRefractive) {//diffuse
 		ray.direction = calculateRandomDirectionInHemisphere(normal, rng);
 		ray.origin = intersect;
 		color *= m.color/Diff;
 	}
 	else if (randoCalrisian < Diff + Spec){//specular - transmit or reflect!
-		if (!m.hasRefractive || randoCalrisian < schlick || tir) {//reflect
+		if (!m.hasRefractive || randoCalrisian < schlick) {//reflect
 			ray.direction = calculateRandomDirectionSpecular(normal, ray.direction, rng, m.specular.exponent);
 			ray.origin = intersect;
-			color *= tir ? m.specular.color * schlick : m.specular.color / Spec;
+			color *= m.specular.color / Spec;
 		}
 		else {//transmit! transmission is 1 - reflectivity according to fresnel
-			float cosincident = outside? glm::dot(-ray.direction, normal) : glm::dot(ray.direction, normal);
-			float n = outside ? 1.0 / m.indexOfRefraction : m.indexOfRefraction;
-			float sin2trans = n*n*(1 - cosincident*cosincident);
-			glm::vec3 transmit = n*ray.direction + (n * cosincident - sqrt(1 - sin2trans))*normal;
-
-			ray.direction = transmit;
-			ray.origin = intersect + ray.direction*0.0001f; //this should push origins across refractive interface?
-			color *= m.specular.color * (1 - schlick) / Spec;
+			float ior = m.indexOfRefraction;
+			if (outside) {
+				ior = 1.f / ior;
+			}
+			ray.direction = glm::refract(ray.direction, normal, ior);//calculateRefraction(normal,ray.direction,outside,ior1,ior2);
+			ray.origin = intersect + ray.direction*0.001f; //this should push origins across refractive interface?
+			color *= m.color;
 		}
 	}
 }

@@ -51,7 +51,7 @@ EMITTANCE   0
 // Green glass?
 MATERIAL 5
 RGB         .35 .85 .35
-SPECEX      200
+SPECEX      500
 SPECRGB     .85 .85 .85
 REFL        0
 REFR        1
@@ -123,7 +123,7 @@ SCALE       .05 10 10
 OBJECT 6
 sphere
 material 4
-TRANS       0 1.5 0
+TRANS       -3 1.5 -3
 ROTAT       0 0 0
 SCALE       3 3 3
 
@@ -139,6 +139,6 @@ SCALE       3 3 3
 OBJECT 8
 sphere
 material 5
-TRANS       -3 1.5 3
+TRANS       0 1.5 0
 ROTAT       0 0 0
 SCALE       3 3 3
